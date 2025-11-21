@@ -1,7 +1,6 @@
 =====================================================
 DASHBOARD DE CRIPTOMONEDAS
 =====================================================
-Proyecto Solemne 3 - Taller de Programación II
 
 --- DESCRIPCIÓN ---
 
