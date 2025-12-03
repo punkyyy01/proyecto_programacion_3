@@ -2,15 +2,12 @@
 import streamlit as st
 import pandas as pd
 import requests
-import ast
 
 # -----------------------------------------------------------------------------
 # BLOQUE 1: CONFIGURACIÓN DE ENTORNO
 # -----------------------------------------------------------------------------
-# Inicialización del contexto de la aplicación. Se define el layout 'wide' 
-# para maximizar el espacio de visualización de datos tabulares y gráficos.
 st.set_page_config(
-    page_title='Crypto Lab - Solemne 3', 
+    page_title='Crypto Lab', 
     layout='wide',
     initial_sidebar_state="expanded",
     page_icon="💠"
@@ -24,14 +21,11 @@ st.markdown("Entorno de visualización de activos digitales mediante CoinGecko A
 # -----------------------------------------------------------------------------
 st.sidebar.header("🎛️ Centro de Control")
 
-# Captura de parámetros de entrada para el filtrado dinámico del dataset.
 moneda_base = st.sidebar.selectbox("Divisa de referencia:", ['USD', 'EUR', 'CLP'], index=0)
 tipo_orden = st.sidebar.radio("Criterio de clasificación:", ['Capitalización', 'Volumen'])
 cantidad_monedas = st.sidebar.slider("Alcance del análisis (N° monedas)", 5, 50, 10)
 filtro_nombre = st.sidebar.text_input("🔭 Rastrear activo específico:")
 
-# Mecanismo de invalidación manual de caché. Permite al usuario forzar 
-# una nueva petición HTTP si los datos están obsoletos antes del TTL.
 if st.sidebar.button("🔄 Refrescar Datos"):
     st.cache_data.clear()
 
@@ -41,14 +35,11 @@ st.sidebar.caption("📡 Datos sincronizados con CoinGecko")
 # -----------------------------------------------------------------------------
 # BLOQUE 3: LÓGICA DE DATOS Y API
 # -----------------------------------------------------------------------------
-# Implementación de caché con TTL (Time To Live) de 300 segundos. 
-# Esto reduce la latencia y evita el bloqueo por Rate Limiting de la API.
 @st.cache_data(ttl=300)
 def cargar_datos(cantidad: int, moneda: str, orden: str) -> pd.DataFrame:
     """
-    Orquesta la petición de datos. Implementa un patrón 'Fail-Safe':
-    si la API falla (especialmente error 429), recurre a un almacenamiento local (CSV)
-    para garantizar la continuidad del servicio.
+    Realiza la petición a la API de CoinGecko y devuelve un DataFrame.
+    Si falla, devuelve un DataFrame vacío sin intentar guardar/leer archivos locales.
     """
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
@@ -59,43 +50,25 @@ def cargar_datos(cantidad: int, moneda: str, orden: str) -> pd.DataFrame:
         'sparkline': 'true', 
         'price_change_percentage': '7d'
     }
-    archivo_respaldo = "respaldo_seguridad.csv"
 
     try:
-        # Timeout establecido en 10s para evitar bloqueos indefinidos del hilo principal.
         resp = requests.get(url, params=params, timeout=10)
         
         if resp.status_code == 200:
             data = resp.json()
-            df_api = pd.DataFrame(data)
-            
-            # Persistencia de datos exitosos para uso futuro en caso de fallo de red.
-            try:
-                df_api.to_csv(archivo_respaldo, index=False)
-            except:
-                pass 
-                
-            return df_api
-            
+            return pd.DataFrame(data)
         elif resp.status_code == 429:
-            # Manejo explícito de saturación de API (Rate Limit).
-            st.warning("🚧 API saturada (Error 429). Intentando cargar respaldo local...")
-            raise Exception("API 429")
+            st.warning("🚧 API saturada (Error 429). Por favor espera unos minutos.")
+            return pd.DataFrame()
         else:
             st.error(f"🚫 Error HTTP {resp.status_code}")
-            raise Exception(f"HTTP {resp.status_code}")
+            return pd.DataFrame()
             
     except Exception as e:
-        # Bloque de recuperación: Carga el dataset local si la conexión falla.
-        try:
-            df_backup = pd.read_csv(archivo_respaldo)
-            st.warning(f"⚠️ Modo Offline: Mostrando datos de respaldo ({archivo_respaldo}) por fallo de conexión.")
-            return df_backup
-        except FileNotFoundError:
-            st.error("💀 Error crítico: API caída y no existe archivo de respaldo local.")
-            return pd.DataFrame()
+        st.error(f"⚠️ Error de conexión: {e}")
+        return pd.DataFrame()
 
-# Mapeo de constantes para normalizar inputs de usuario vs parámetros de API.
+# Mapeo de constantes
 moneda_map = {'USD': 'usd', 'EUR': 'eur', 'CLP': 'clp'}
 orden_map = {'Capitalización': 'market_cap_desc', 'Volumen': 'volume_desc'}
 simbolo_moneda = {'usd': '$', 'eur': '€', 'clp': '$'}[moneda_map[moneda_base]]
@@ -103,29 +76,19 @@ simbolo_moneda = {'usd': '$', 'eur': '€', 'clp': '$'}[moneda_map[moneda_base]]
 with st.spinner('Sincronizando bloques...'):
     df = cargar_datos(cantidad_monedas, moneda_map[moneda_base], orden_map[tipo_orden])
 
-# Validación temprana de estructura de datos para prevenir errores en renderizado posterior.
 if df.empty:
     st.warning("☁️ No se pudieron obtener datos. Intenta más tarde.")
     st.stop()
 
 def limpiar_sparkline(row):
-    # Deserialización de datos: Al leer desde CSV, las listas se interpretan como strings.
-    # ast.literal_eval recupera la estructura de lista original para los gráficos.
-    if isinstance(row, str):
-        try:
-            row = ast.literal_eval(row)
-        except:
-            return []
-            
     if isinstance(row, dict) and 'price' in row:
         return row['price']
     return []
 
-# Aplicación de transformación solo si la columna existe (prevención de KeyError).
 if 'sparkline_in_7d' in df.columns:
     df['tendencia_7d'] = df['sparkline_in_7d'].apply(limpiar_sparkline)
 
-# Filtrado local post-fetch para búsquedas específicas por nombre o símbolo.
+# Filtrado local
 if filtro_nombre:
     df = df[df['name'].str.contains(filtro_nombre, case=False) | df['symbol'].str.contains(filtro_nombre, case=False)]
     if df.empty:
@@ -138,7 +101,6 @@ if filtro_nombre:
 col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
 top_coin = df.iloc[0]
 
-# Indicadores de alto nivel para evaluación rápida del estado del activo principal.
 col_kpi1.metric("🚀 Activo Dominante", top_coin['name'])
 col_kpi2.metric("💳 Cotización", f"{simbolo_moneda}{top_coin['current_price']:,.2f}")
 col_kpi3.metric("🌊 Flujo 24h", f"{top_coin['price_change_percentage_24h']:.2f}%", 
@@ -156,8 +118,6 @@ with tab1:
     
     cols_to_show = ['image', 'name', 'symbol', 'current_price', 'market_cap', 'tendencia_7d', 'price_change_percentage_24h']
 
-    # Configuración del DataFrame: Se definen tipos de columnas específicos
-    # (ImageColumn, LineChartColumn) para enriquecer la visualización tabular.
     st.dataframe(
         df[cols_to_show],
         column_config={
@@ -179,6 +139,7 @@ with tab1:
         height=500
     )
     
+    # Botón de descarga manual para el usuario
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("💿 Exportar CSV", csv, 'crypto_data.csv', 'text/csv')
 
@@ -188,13 +149,11 @@ with tab1:
 with tab2:
     st.header("Telemétrica de Mercado")
 
-    # Visualización de distribución de capitalización (Top 10).
     st.subheader("1. Dominio de Capitalización Global")
     st.bar_chart(df.head(10).set_index('name')['market_cap'])
     
     st.divider() 
 
-    # Análisis de series temporales para un activo seleccionado.
     st.subheader("2. Cronograma de Precios (Semanal) - Interactivo")
     
     lista_monedas = df['name'].tolist()
@@ -203,8 +162,6 @@ with tab2:
     datos_moneda = df[df['name'] == moneda_select].iloc[0]
     precios_historia = datos_moneda['tendencia_7d']
 
-    # Lógica condicional para renderizado del gráfico de líneas.
-    # Se define el color de la traza basándose en el delta de rendimiento (Verde/Rojo).
     if len(precios_historia) > 0:
         chart_data = pd.DataFrame(precios_historia, columns=["Precio"])
         color_hex = '#00E676' if precios_historia[-1] >= precios_historia[0] else '#FF1744'
@@ -218,7 +175,6 @@ with tab2:
 
     st.divider()
 
-    # Comparativa de volatilidad intradiaria (High/Low).
     st.subheader("3. Amplitud Térmica (Máx/Mín 24h)")
     monedas_default = df['name'].iloc[:3].tolist()
     seleccion = st.multiselect("Comparativa de volatilidad diaria:", df['name'].tolist(), default=monedas_default)
@@ -230,8 +186,6 @@ with tab2:
 
     st.divider()
 
-    # Gráfico de dispersión multidimensional: Precio (X) vs Volumen (Y) vs Market Cap (Tamaño).
-    # Permite identificar anomalías de valoración o volumen.
     st.subheader("4. Mapa de Dispersión: Precio vs Volumen")
     st.markdown("Relación entre el valor del activo, su volumen de transacciones y su tamaño de mercado (tamaño de la burbuja).")
     
@@ -258,7 +212,6 @@ with tab2:
 with tab3:
     st.header("📊 Informe de Análisis y Conclusiones")
     
-    # Cálculo dinámico de extremos del dataset (máximo ganador y máximo perdedor).
     st.subheader("1. Hallazgos de Volatilidad (24h)")
     
     mejor = df.loc[df['price_change_percentage_24h'].idxmax()]
@@ -280,7 +233,6 @@ with tab3:
 
     st.subheader("2. Interpretación de Datos")
     
-    # Generación de texto dinámico basado en los cálculos previos para automatizar el reporte.
     top_coin_name = df.iloc[0]['name']
     dominancia_aprox = (df.iloc[0]['market_cap'] / df['market_cap'].sum()) * 100
     
